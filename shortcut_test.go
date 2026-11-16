@@ -16,7 +16,9 @@ func randomGraph(r *rand.Rand, n, m int) *Graph {
 	for i := range edges {
 		edges[i] = Edge{uint32(r.IntN(n)), uint32(r.IntN(n)), uint32(1 + r.IntN(100))}
 	}
-	return NewGraph(lat, lon, edges)
+	g := NewGraph(n, edges)
+	g.Lat, g.Lon = lat, lon
+	return g
 }
 
 // bellmanFord is the slow, obviously-correct oracle.
@@ -233,7 +235,9 @@ func TestPrepareKeepsDistances(t *testing.T) {
 func TestNearestMatchesLinearScan(t *testing.T) {
 	r := rand.New(rand.NewPCG(9, 10))
 	for _, n := range []int{1, 2, 3, 10, 1000, 20000} {
-		g := withCoords(r, NewGraph(make([]float64, n), make([]float64, n), nil))
+		g0 := NewGraph(n, nil)
+		g0.Lat, g0.Lon = make([]float64, n), make([]float64, n)
+		g := withCoords(r, g0)
 		order := make([]uint32, n)
 		for i := range order {
 			order[i] = uint32(i)
@@ -248,12 +252,118 @@ func TestNearestMatchesLinearScan(t *testing.T) {
 			lat, lon := 7+r.Float64()*12, 73+r.Float64()*12
 			best := math.Inf(1)
 			for v := range g.Lat {
-				best = math.Min(best, haversine(lat, lon, g.Lat[v], g.Lon[v]))
+				best = math.Min(best, Haversine(lat, lon, g.Lat[v], g.Lon[v]))
 			}
 			v := g.Nearest(lat, lon)
-			if got := haversine(lat, lon, g.Lat[v], g.Lon[v]); got > best+1e-6 {
+			if got := Haversine(lat, lon, g.Lat[v], g.Lon[v]); got > best+1e-6 {
 				t.Fatalf("n=%d: nearest is %.3f m away, linear scan found %.3f m", n, got, best)
 			}
 		}
+	}
+}
+
+// geoGraph is a random graph whose weights behave like road travel times:
+// every edge takes at least its straight-line length at maxKmh, like import.
+func geoGraph(r *rand.Rand, n, m int) *Graph {
+	g := withCoords(r, randomGraph(r, n, 0))
+	var edges []Edge
+	for range m {
+		a, b := uint32(r.IntN(n)), uint32(r.IntN(n))
+		// Mostly short edges between nearby ids, like a road network after
+		// k-d renumbering, plus a few long ones.
+		if r.IntN(4) > 0 {
+			b = uint32(min(n-1, int(a)+1+r.IntN(5)))
+		}
+		kmh := 10 + r.Float64()*(maxKmh-10)
+		w := uint32(math.Max(1, math.Ceil(Haversine(g.Lat[a], g.Lon[a], g.Lat[b], g.Lon[b])/(kmh/3.6)*1000)))
+		edges = append(edges, Edge{a, b, w}, Edge{b, a, w + uint32(r.IntN(3))})
+	}
+	h := NewGraph(n, edges)
+	h.Lat, h.Lon = g.Lat, g.Lon
+	return h.Prepare()
+}
+
+type router interface {
+	Route(s, t uint32) (uint32, []uint32)
+	Settled() int
+}
+
+func checkRouter(t *testing.T, name string, g *Graph, rt router, r *rand.Rand, queries int) {
+	t.Helper()
+	d := NewDijkstra(g)
+	n := g.NumNodes()
+	for range queries {
+		s, tg := uint32(r.IntN(n)), uint32(r.IntN(n))
+		want, _ := d.Route(s, tg)
+		got, path := rt.Route(s, tg)
+		if got != want {
+			t.Fatalf("%s: route(%d,%d) = %d, want %d", name, s, tg, got, want)
+		}
+		if got == Inf {
+			continue
+		}
+		if path[0] != s || path[len(path)-1] != tg || pathWeight(t, g, path) != got {
+			t.Fatalf("%s: route(%d,%d): path %v does not have weight %d", name, s, tg, path, got)
+		}
+	}
+}
+
+func TestRoutersMatchDijkstra(t *testing.T) {
+	r := rand.New(rand.NewPCG(11, 12))
+	for range 60 {
+		n := 2 + r.IntN(300)
+		g := geoGraph(r, n, 3*n)
+		checkRouter(t, "bidi", g, NewBidiDijkstra(g, g.Reverse()), r, 50)
+		checkRouter(t, "astar", g, NewAStar(g), r, 50)
+		checkRouter(t, "alt", g, NewALT(g, SelectLandmarks(g, 1+r.IntN(6), r.Uint64())), r, 50)
+	}
+}
+
+func TestLandmarksSaveLoad(t *testing.T) {
+	r := rand.New(rand.NewPCG(13, 14))
+	g := geoGraph(r, 200, 600)
+	lm := SelectLandmarks(g, 4, 1)
+	p := filepath.Join(t.TempDir(), "g.lm")
+	if err := lm.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadLandmarks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(lm, got) {
+		t.Fatal("landmarks changed after save/load")
+	}
+}
+
+func TestCHMatchesDijkstra(t *testing.T) {
+	r := rand.New(rand.NewPCG(15, 16))
+	for range 60 {
+		n := 2 + r.IntN(300)
+		g := geoGraph(r, n, 3*n)
+		checkRouter(t, "ch geo", g, NewCHRouter(Contract(g, nil)), r, 100)
+	}
+	// Raw random graphs: parallel edges, self-loops, unreachable pairs.
+	for range 200 {
+		n := 1 + r.IntN(40)
+		g := randomGraph(r, n, r.IntN(4*n))
+		checkRouter(t, "ch random", g, NewCHRouter(Contract(g, nil)), r, 100)
+	}
+}
+
+func TestCHSaveLoad(t *testing.T) {
+	r := rand.New(rand.NewPCG(17, 18))
+	g := geoGraph(r, 300, 900)
+	ch := Contract(g, nil)
+	p := filepath.Join(t.TempDir(), "g.ch")
+	if err := ch.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadCH(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ch, got) {
+		t.Fatal("hierarchy changed after save/load")
 	}
 }

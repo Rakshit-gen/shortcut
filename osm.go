@@ -21,6 +21,15 @@ var speeds = map[string]float64{
 	"living_street": 10, "service": 15,
 }
 
+// maxKmh is the top speed in the table. A* divides distance by it for a lower bound.
+var maxKmh = func() float64 {
+	m := 0.0
+	for _, s := range speeds {
+		m = max(m, s)
+	}
+	return m
+}()
+
 // wayRule decides whether cars can use a way, at what speed, and in which directions.
 func wayRule(t osm.Tags) (kmh float64, fwd, bwd bool) {
 	kmh, ok := speeds[t.Find("highway")]
@@ -93,8 +102,8 @@ func ImportPBF(path string) (*Graph, error) {
 			if a < 0 || b < 0 || a == b { // node outside the extract, or repeated node
 				continue
 			}
-			m := haversine(lat[a], lon[a], lat[b], lon[b])
-			ms := uint32(math.Max(1, math.Round(m/(w.kmh/3.6)*1000)))
+			m := Haversine(lat[a], lon[a], lat[b], lon[b])
+			ms := uint32(math.Max(1, math.Ceil(m/(w.kmh/3.6)*1000))) // ceil keeps the A* bound below every edge
 			if w.fwd {
 				edges = append(edges, Edge{uint32(a), uint32(b), ms})
 			}
@@ -103,7 +112,9 @@ func ImportPBF(path string) (*Graph, error) {
 			}
 		}
 	}
-	return NewGraph(lat, lon, edges).Prepare(), nil
+	g := NewGraph(len(lat), edges)
+	g.Lat, g.Lon = lat, lon
+	return g.Prepare(), nil
 }
 
 func scan(path string, nodes bool, fn func(osm.Object)) error {
@@ -123,8 +134,8 @@ func scan(path string, nodes bool, fn func(osm.Object)) error {
 	return s.Err()
 }
 
-// haversine returns the great-circle distance in meters.
-func haversine(lat1, lon1, lat2, lon2 float64) float64 {
+// Haversine returns the great-circle distance in meters.
+func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
 	const r = 6371000.0
 	rad := math.Pi / 180
 	dLat, dLon := (lat2-lat1)*rad, (lon2-lon1)*rad

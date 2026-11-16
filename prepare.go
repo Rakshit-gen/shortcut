@@ -43,7 +43,9 @@ func (g *Graph) permute(order []uint32) *Graph {
 			}
 		}
 	}
-	return NewGraph(lat, lon, edges)
+	p := NewGraph(len(order), edges)
+	p.Lat, p.Lon = lat, lon
+	return p
 }
 
 // largestSCC runs Tarjan's algorithm with an explicit call stack (road graphs
