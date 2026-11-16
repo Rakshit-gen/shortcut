@@ -103,7 +103,7 @@ func ImportPBF(path string) (*Graph, error) {
 			}
 		}
 	}
-	return NewGraph(lat, lon, edges), nil
+	return NewGraph(lat, lon, edges).Prepare(), nil
 }
 
 func scan(path string, nodes bool, fn func(osm.Object)) error {

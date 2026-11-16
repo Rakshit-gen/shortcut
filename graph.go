@@ -49,7 +49,8 @@ func NewGraph(lat, lon []float64, edges []Edge) *Graph {
 func (g *Graph) NumNodes() int { return len(g.FirstOut) - 1 }
 func (g *Graph) NumEdges() int { return len(g.Head) }
 
-var magic = [8]byte{'s', 'h', 'c', 't', 'g', 'r', 'f', '1'}
+// Version 2: nodes are one SCC, numbered in k-d tree order (see Prepare).
+var magic = [8]byte{'s', 'h', 'c', 't', 'g', 'r', 'f', '2'}
 
 func (g *Graph) Save(path string) error {
 	f, err := os.Create(path)
@@ -87,7 +88,7 @@ func Load(path string) (*Graph, error) {
 		}
 	}
 	if m != magic {
-		return nil, errors.New("not a shortcut graph file")
+		return nil, errors.New("not a shortcut graph file, or an older format: run import again")
 	}
 	g := &Graph{
 		FirstOut: make([]uint32, n+1),
@@ -105,16 +106,4 @@ func Load(path string) (*Graph, error) {
 		return nil, errors.New("trailing data in graph file")
 	}
 	return g, nil
-}
-
-// Nearest returns the node closest to (lat, lon). Linear scan for now.
-func (g *Graph) Nearest(lat, lon float64) uint32 {
-	best, bestD := uint32(0), -1.0
-	for v := range g.Lat {
-		d := haversine(lat, lon, g.Lat[v], g.Lon[v])
-		if bestD < 0 || d < bestD {
-			best, bestD = uint32(v), d
-		}
-	}
-	return best
 }
